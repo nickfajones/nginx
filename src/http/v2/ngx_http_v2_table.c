@@ -10,11 +10,8 @@
 #include <ngx_http.h>
 
 
-#define NGX_HTTP_V2_TABLE_SIZE  4096
-
-
 static ngx_int_t ngx_http_v2_table_account(ngx_http_v2_connection_t *h2c,
-    size_t size);
+    size_t size, ngx_uint_t is_request);
 
 
 static ngx_http_v2_header_t  ngx_http_v2_static_table[] = {
@@ -127,9 +124,9 @@ ngx_http_v2_get_indexed_header(ngx_http_v2_connection_t *h2c, ngx_uint_t index,
 
     index -= NGX_HTTP_V2_STATIC_TABLE_ENTRIES;
 
-    if (index < h2c->hpack.added - h2c->hpack.deleted) {
-        index = (h2c->hpack.added - index - 1) % h2c->hpack.allocated;
-        entry = h2c->hpack.entries[index];
+    if (index < h2c->hpack_dec.added - h2c->hpack_dec.deleted) {
+        index = (h2c->hpack_dec.added - index - 1) % h2c->hpack_dec.allocated;
+        entry = h2c->hpack_dec.entries[index];
 
         p = ngx_pnalloc(h2c->state.pool, entry->name.len + 1);
         if (p == NULL) {
@@ -139,11 +136,12 @@ ngx_http_v2_get_indexed_header(ngx_http_v2_connection_t *h2c, ngx_uint_t index,
         h2c->state.header.name.len = entry->name.len;
         h2c->state.header.name.data = p;
 
-        rest = h2c->hpack.storage + NGX_HTTP_V2_TABLE_SIZE - entry->name.data;
+        rest = h2c->hpack_dec.storage + NGX_HTTP_V2_HEADER_TABLE_SIZE -
+               entry->name.data;
 
         if (entry->name.len > rest) {
             p = ngx_cpymem(p, entry->name.data, rest);
-            p = ngx_cpymem(p, h2c->hpack.storage, entry->name.len - rest);
+            p = ngx_cpymem(p, h2c->hpack_dec.storage, entry->name.len - rest);
 
         } else {
             p = ngx_cpymem(p, entry->name.data, entry->name.len);
@@ -163,11 +161,12 @@ ngx_http_v2_get_indexed_header(ngx_http_v2_connection_t *h2c, ngx_uint_t index,
         h2c->state.header.value.len = entry->value.len;
         h2c->state.header.value.data = p;
 
-        rest = h2c->hpack.storage + NGX_HTTP_V2_TABLE_SIZE - entry->value.data;
+        rest = h2c->hpack_dec.storage + NGX_HTTP_V2_HEADER_TABLE_SIZE -
+               entry->value.data;
 
         if (entry->value.len > rest) {
             p = ngx_cpymem(p, entry->value.data, rest);
-            p = ngx_cpymem(p, h2c->hpack.storage, entry->value.len - rest);
+            p = ngx_cpymem(p, h2c->hpack_dec.storage, entry->value.len - rest);
 
         } else {
             p = ngx_cpymem(p, entry->value.data, entry->value.len);
@@ -185,179 +184,299 @@ ngx_http_v2_get_indexed_header(ngx_http_v2_connection_t *h2c, ngx_uint_t index,
 }
 
 
+void
+ngx_http_v2_get_header_index(ngx_http_v2_connection_t *h2c,
+    ngx_http_v2_header_t *header, ngx_uint_t *index, ngx_uint_t *name_only)
+{
+    ngx_uint_t             i, static_index;
+    ngx_http_v2_header_t  *stored_header;
+    size_t                 rest;
+
+    *index = 0;
+    *name_only = 1;
+
+    for (i = 0; i < NGX_HTTP_V2_STATIC_TABLE_ENTRIES; i++) {
+        stored_header = &ngx_http_v2_static_table[i];
+
+        if ((stored_header->name.len != header->name.len) ||
+            (ngx_strncmp(stored_header->name.data, header->name.data,
+                         stored_header->name.len) != 0)) {
+            if (*index != 0) {
+                /* passed by all headers with matching name,
+                   in the static table, there will be no more matches,
+                   keep result at previous index */
+                *name_only = 1;
+
+                break;
+            }
+
+            continue;
+        }
+
+        *index = i + 1;
+
+        if ((stored_header->value.len > 0) &&
+            (stored_header->value.len == header->value.len) &&
+            (ngx_strncmp(stored_header->value.data, header->value.data,
+                         stored_header->value.len) == 0)) {
+            *name_only = 0;
+
+            break;
+        }
+    }
+
+    if ((*index > 0) && (*name_only == 0)) {
+        return;
+    }
+
+    static_index = *index;
+    *index = 0;
+
+    for (i = h2c->hpack_enc.added; i > h2c->hpack_enc.deleted; i--) {
+        stored_header = h2c->hpack_enc.entries[(i-1) % h2c->hpack_enc.allocated];
+
+        rest = h2c->hpack_enc.storage + NGX_HTTP_V2_HEADER_TABLE_SIZE -
+               stored_header->name.data;
+
+        if ((stored_header->name.len != header->name.len) ||
+
+            (((rest >= stored_header->name.len) &&
+              (ngx_strncmp(stored_header->name.data, header->name.data,
+                           header->name.len))) ||
+
+             ((rest < stored_header->name.len) &&
+               ((ngx_strncmp(stored_header->name.data, header->name.data,
+                             rest)) ||
+                (ngx_strncmp(h2c->hpack_enc.storage,
+                             header->name.data + rest,
+                             header->name.len - rest)))))) {
+            /* dynamic hpack will not store repeated headers in order, so we
+               must continue the search through the table */
+            continue;
+        }
+
+        *index = h2c->hpack_enc.added - i + 1;
+
+        rest = h2c->hpack_enc.storage + NGX_HTTP_V2_HEADER_TABLE_SIZE -
+               stored_header->value.data;
+
+        if ((stored_header->value.len == header->value.len) &&
+
+            (((rest >= stored_header->value.len) &&
+              (ngx_strncmp(stored_header->value.data, header->value.data,
+                           header->value.len) == 0)) ||
+
+             ((rest < stored_header->value.len) &&
+               (ngx_strncmp(stored_header->value.data, header->value.data,
+                            rest) == 0) &&
+               (ngx_strncmp(h2c->hpack_enc.storage,
+                            header->value.data + rest,
+                            header->value.len - rest) == 0)))) {
+            *name_only = 0;
+
+            break;
+        }
+    }
+
+    if ((static_index > 0) && ((index == 0) || (*name_only == 1))) {
+        /* static only or static and dynamic name only match, prefer static */
+        *index = static_index;
+        return;
+    }
+
+    if (*index > 0) {
+        /* full or name only match on dynamic table */
+        *index += NGX_HTTP_V2_STATIC_TABLE_ENTRIES;
+        return;
+    }
+}
+
+
 ngx_int_t
 ngx_http_v2_add_header(ngx_http_v2_connection_t *h2c,
-    ngx_http_v2_header_t *header)
+    ngx_http_v2_header_t *header, ngx_uint_t is_request)
 {
     size_t                 avail;
     ngx_uint_t             index;
+    ngx_http_v2_hpack_t   *hpack;
     ngx_http_v2_header_t  *entry, **entries;
 
-    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, h2c->connection->log, 0,
-                   "http2 table add: \"%V: %V\"",
+    hpack = (is_request) ? &h2c->hpack_dec : &h2c->hpack_enc;
+
+    ngx_log_debug3(NGX_LOG_DEBUG_HTTP, h2c->connection->log, 0,
+                   "http2 hpack %s table add: \"%V: %V\"",
+                   is_request ? "decode" : "encode",
                    &header->name, &header->value);
 
-    if (h2c->hpack.entries == NULL) {
-        h2c->hpack.allocated = 64;
-        h2c->hpack.size = NGX_HTTP_V2_TABLE_SIZE;
-        h2c->hpack.free = NGX_HTTP_V2_TABLE_SIZE;
+    if (hpack->entries == NULL) {
+        hpack->allocated = 64;
 
-        h2c->hpack.entries = ngx_palloc(h2c->connection->pool,
-                                        sizeof(ngx_http_v2_header_t *)
-                                        * h2c->hpack.allocated);
-        if (h2c->hpack.entries == NULL) {
+        hpack->entries = ngx_palloc(h2c->connection->pool,
+                                    sizeof(ngx_http_v2_header_t *)
+                                    * hpack->allocated);
+        if (hpack->entries == NULL) {
             return NGX_ERROR;
         }
 
-        h2c->hpack.storage = ngx_palloc(h2c->connection->pool,
-                                        h2c->hpack.free);
-        if (h2c->hpack.storage == NULL) {
+        hpack->storage = ngx_palloc(h2c->connection->pool,
+                                    NGX_HTTP_V2_HEADER_TABLE_SIZE);
+        if (hpack->storage == NULL) {
             return NGX_ERROR;
         }
 
-        h2c->hpack.pos = h2c->hpack.storage;
+        hpack->pos = hpack->storage;
     }
 
-    if (ngx_http_v2_table_account(h2c, header->name.len + header->value.len)
-        != NGX_OK)
+    if (ngx_http_v2_table_account(h2c, header->name.len + header->value.len,
+                                  is_request) != NGX_OK)
     {
-        return NGX_OK;
+        return NGX_DECLINED;
     }
 
-    if (h2c->hpack.reused == h2c->hpack.deleted) {
+    if (hpack->reused == hpack->deleted) {
         entry = ngx_palloc(h2c->connection->pool, sizeof(ngx_http_v2_header_t));
         if (entry == NULL) {
             return NGX_ERROR;
         }
 
     } else {
-        entry = h2c->hpack.entries[h2c->hpack.reused++ % h2c->hpack.allocated];
+        entry = hpack->entries[hpack->reused++ % hpack->allocated];
     }
 
-    avail = h2c->hpack.storage + NGX_HTTP_V2_TABLE_SIZE - h2c->hpack.pos;
+    avail = hpack->storage + NGX_HTTP_V2_HEADER_TABLE_SIZE - hpack->pos;
 
     entry->name.len = header->name.len;
-    entry->name.data = h2c->hpack.pos;
+    entry->name.data = hpack->pos;
 
     if (avail >= header->name.len) {
-        h2c->hpack.pos = ngx_cpymem(h2c->hpack.pos, header->name.data,
-                                    header->name.len);
+        hpack->pos = ngx_cpymem(hpack->pos, header->name.data,
+                                header->name.len);
     } else {
-        ngx_memcpy(h2c->hpack.pos, header->name.data, avail);
-        h2c->hpack.pos = ngx_cpymem(h2c->hpack.storage,
-                                    header->name.data + avail,
-                                    header->name.len - avail);
-        avail = NGX_HTTP_V2_TABLE_SIZE;
+        ngx_memcpy(hpack->pos, header->name.data, avail);
+        hpack->pos = ngx_cpymem(hpack->storage,
+                                header->name.data + avail,
+                                header->name.len - avail);
+        avail = NGX_HTTP_V2_HEADER_TABLE_SIZE;
     }
 
     avail -= header->name.len;
 
     entry->value.len = header->value.len;
-    entry->value.data = h2c->hpack.pos;
+    entry->value.data = hpack->pos;
 
     if (avail >= header->value.len) {
-        h2c->hpack.pos = ngx_cpymem(h2c->hpack.pos, header->value.data,
-                                    header->value.len);
+        hpack->pos = ngx_cpymem(hpack->pos, header->value.data,
+                                header->value.len);
     } else {
-        ngx_memcpy(h2c->hpack.pos, header->value.data, avail);
-        h2c->hpack.pos = ngx_cpymem(h2c->hpack.storage,
-                                    header->value.data + avail,
-                                    header->value.len - avail);
+        ngx_memcpy(hpack->pos, header->value.data, avail);
+        hpack->pos = ngx_cpymem(hpack->storage,
+                                header->value.data + avail,
+                                header->value.len - avail);
     }
 
-    if (h2c->hpack.allocated == h2c->hpack.added - h2c->hpack.deleted) {
+    if (hpack->allocated == hpack->added - hpack->deleted) {
 
         entries = ngx_palloc(h2c->connection->pool,
                              sizeof(ngx_http_v2_header_t *)
-                             * (h2c->hpack.allocated + 64));
+                             * (hpack->allocated + 64));
         if (entries == NULL) {
             return NGX_ERROR;
         }
 
-        index = h2c->hpack.deleted % h2c->hpack.allocated;
+        index = hpack->deleted % hpack->allocated;
 
-        ngx_memcpy(entries, &h2c->hpack.entries[index],
-                   (h2c->hpack.allocated - index)
+        ngx_memcpy(entries, &hpack->entries[index],
+                   (hpack->allocated - index)
                    * sizeof(ngx_http_v2_header_t *));
 
-        ngx_memcpy(&entries[h2c->hpack.allocated - index], h2c->hpack.entries,
+        ngx_memcpy(&entries[hpack->allocated - index], hpack->entries,
                    index * sizeof(ngx_http_v2_header_t *));
 
-        (void) ngx_pfree(h2c->connection->pool, h2c->hpack.entries);
+        (void) ngx_pfree(h2c->connection->pool, hpack->entries);
 
-        h2c->hpack.entries = entries;
+        hpack->entries = entries;
 
-        h2c->hpack.added = h2c->hpack.allocated;
-        h2c->hpack.deleted = 0;
-        h2c->hpack.reused = 0;
-        h2c->hpack.allocated += 64;
+        hpack->added = hpack->allocated;
+        hpack->deleted = 0;
+        hpack->reused = 0;
+        hpack->allocated += 64;
     }
 
-    h2c->hpack.entries[h2c->hpack.added++ % h2c->hpack.allocated] = entry;
+    hpack->entries[hpack->added++ % hpack->allocated] = entry;
 
     return NGX_OK;
 }
 
 
 static ngx_int_t
-ngx_http_v2_table_account(ngx_http_v2_connection_t *h2c, size_t size)
+ngx_http_v2_table_account(ngx_http_v2_connection_t *h2c, size_t size,
+    ngx_uint_t is_request)
 {
+    ngx_http_v2_hpack_t   *hpack;
     ngx_http_v2_header_t  *entry;
+
+    hpack = (is_request) ? &h2c->hpack_dec : &h2c->hpack_enc;
 
     size += 32;
 
-    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, h2c->connection->log, 0,
-                   "http2 table account: %uz free:%uz",
-                   size, h2c->hpack.free);
+    ngx_log_debug3(NGX_LOG_DEBUG_HTTP, h2c->connection->log, 0,
+                   "http2 hpack %s table account: %uz free:%uz",
+                   is_request ? "decode" : "encode", size, hpack->free);
 
-    if (size <= h2c->hpack.free) {
-        h2c->hpack.free -= size;
+    if (size <= hpack->free) {
+        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, h2c->connection->log, 0,
+                       "http2 capacity available");
+        hpack->free -= size;
         return NGX_OK;
     }
 
-    if (size > h2c->hpack.size) {
-        h2c->hpack.deleted = h2c->hpack.added;
-        h2c->hpack.free = h2c->hpack.size;
+    if (size > hpack->size) {
+        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, h2c->connection->log, 0,
+                       "http2 declined: table size will be exceeded");
         return NGX_DECLINED;
     }
 
     do {
-        entry = h2c->hpack.entries[h2c->hpack.deleted++ % h2c->hpack.allocated];
-        h2c->hpack.free += 32 + entry->name.len + entry->value.len;
-    } while (size > h2c->hpack.free);
+        entry = hpack->entries[hpack->deleted++ % hpack->allocated];
+        hpack->free += 32 + entry->name.len + entry->value.len;
+    } while (size > hpack->free);
 
-    h2c->hpack.free -= size;
+    hpack->free -= size;
 
     return NGX_OK;
 }
 
 
 ngx_int_t
-ngx_http_v2_table_size(ngx_http_v2_connection_t *h2c, size_t size)
+ngx_http_v2_table_size(ngx_http_v2_connection_t *h2c, size_t size,
+    ngx_uint_t is_decode)
 {
-    ssize_t                needed;
+    ngx_http_v2_hpack_t   *hpack;
     ngx_http_v2_header_t  *entry;
+    ssize_t                needed;
 
-    if (size > NGX_HTTP_V2_TABLE_SIZE) {
+    hpack = (is_decode) ? &h2c->hpack_dec : &h2c->hpack_enc;
+
+    if (size > NGX_HTTP_V2_HEADER_TABLE_SIZE) {
         ngx_log_error(NGX_LOG_INFO, h2c->connection->log, 0,
                       "client sent invalid table size update: %uz", size);
 
         return NGX_ERROR;
     }
 
-    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, h2c->connection->log, 0,
-                   "http2 new hpack table size: %uz was:%uz",
-                   size, h2c->hpack.size);
+    ngx_log_debug3(NGX_LOG_DEBUG_HTTP, h2c->connection->log, 0,
+                   "http2 new hpack %s table size: %uz was:%uz",
+                   is_decode ? "decode" : "encode", size, hpack->size);
 
-    needed = h2c->hpack.size - size;
+    needed = hpack->size - size;
 
-    while (needed > (ssize_t) h2c->hpack.free) {
-        entry = h2c->hpack.entries[h2c->hpack.deleted++ % h2c->hpack.allocated];
-        h2c->hpack.free += 32 + entry->name.len + entry->value.len;
+    while (needed > (ssize_t) hpack->free) {
+        entry = hpack->entries[hpack->deleted++ % hpack->allocated];
+        hpack->free += 32 + entry->name.len + entry->value.len;
     }
 
-    h2c->hpack.size = size;
-    h2c->hpack.free -= needed;
+    hpack->size = size;
+    hpack->free -= needed;
 
     return NGX_OK;
 }

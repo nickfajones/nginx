@@ -270,11 +270,14 @@ ngx_http_v2_init(ngx_event_t *rev)
 
     h2c->frame_size = NGX_HTTP_V2_DEFAULT_FRAME_SIZE;
 
-    h2c->table_update = 1;
-
     h2scf = ngx_http_get_module_srv_conf(hc->conf_ctx, ngx_http_v2_module);
 
     h2c->concurrent_pushes = h2scf->concurrent_pushes;
+
+    h2c->hpack_dec.size = NGX_HTTP_V2_HEADER_TABLE_SIZE;
+    h2c->hpack_dec.free = NGX_HTTP_V2_HEADER_TABLE_SIZE;
+    h2c->hpack_enc.size = NGX_HTTP_V2_HEADER_TABLE_SIZE;
+    h2c->hpack_enc.free = NGX_HTTP_V2_HEADER_TABLE_SIZE;
 
     h2c->pool = ngx_create_pool(h2scf->pool_size, h2c->connection->log);
     if (h2c->pool == NULL) {
@@ -1275,7 +1278,7 @@ ngx_http_v2_state_header_block(ngx_http_v2_connection_t *h2c, u_char *pos,
     }
 
     if (size_update) {
-        if (ngx_http_v2_table_size(h2c, value) != NGX_OK) {
+        if (ngx_http_v2_table_size(h2c, value, 1) != NGX_OK) {
             return ngx_http_v2_connection_error(h2c, NGX_HTTP_V2_COMP_ERROR);
         }
 
@@ -1569,7 +1572,7 @@ ngx_http_v2_state_process_header(ngx_http_v2_connection_t *h2c, u_char *pos,
     h2c->state.header_limit -= len;
 
     if (h2c->state.index) {
-        if (ngx_http_v2_add_header(h2c, header) != NGX_OK) {
+        if (ngx_http_v2_add_header(h2c, header, 1) == NGX_ERROR) {
             return ngx_http_v2_connection_error(h2c,
                                                 NGX_HTTP_V2_INTERNAL_ERROR);
         }
@@ -2073,6 +2076,21 @@ ngx_http_v2_state_settings_params(ngx_http_v2_connection_t *h2c, u_char *pos,
                                                  ngx_http_v2_module);
 
             h2c->concurrent_pushes = ngx_min(value, h2scf->concurrent_pushes);
+            break;
+
+        case NGX_HTTP_V2_HEADER_TABLE_SIZE_SETTING:
+            if (value > NGX_HTTP_V2_HEADER_TABLE_SIZE) {
+                value = NGX_HTTP_V2_HEADER_TABLE_SIZE;
+            }
+
+            if (value != h2c->hpack_enc.size) {
+                if (ngx_http_v2_table_size(h2c, value, 0) != NGX_OK) {
+                    return ngx_http_v2_connection_error(h2c,
+                                                        NGX_HTTP_V2_COMP_ERROR);
+                }
+            }
+
+            h2c->table_update = 1;
             break;
 
         default:

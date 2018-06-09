@@ -99,7 +99,6 @@ typedef struct {
 } ngx_http_v2_state_t;
 
 
-
 typedef struct {
     ngx_http_v2_header_t           **entries;
 
@@ -134,7 +133,8 @@ struct ngx_http_v2_connection_s {
 
     ngx_http_v2_state_t              state;
 
-    ngx_http_v2_hpack_t              hpack;
+    ngx_http_v2_hpack_t              hpack_dec;
+    ngx_http_v2_hpack_t              hpack_enc;
 
     ngx_pool_t                      *pool;
 
@@ -297,9 +297,14 @@ ngx_str_t *ngx_http_v2_get_static_value(ngx_uint_t index);
 
 ngx_int_t ngx_http_v2_get_indexed_header(ngx_http_v2_connection_t *h2c,
     ngx_uint_t index, ngx_uint_t name_only);
+
+void ngx_http_v2_get_header_index(ngx_http_v2_connection_t *h2c,
+    ngx_http_v2_header_t *header, ngx_uint_t *index, ngx_uint_t *name_only);
+
 ngx_int_t ngx_http_v2_add_header(ngx_http_v2_connection_t *h2c,
-    ngx_http_v2_header_t *header);
-ngx_int_t ngx_http_v2_table_size(ngx_http_v2_connection_t *h2c, size_t size);
+    ngx_http_v2_header_t *header, ngx_uint_t is_request);
+ngx_int_t ngx_http_v2_table_size(ngx_http_v2_connection_t *h2c, size_t size,
+    ngx_uint_t is_decode);
 
 
 ngx_int_t ngx_http_v2_huff_decode(u_char *state, u_char *src, size_t len,
@@ -362,16 +367,15 @@ size_t ngx_http_v2_huff_encode(u_char *src, size_t len, u_char *dst,
 #define ngx_http_v2_write_sid  ngx_http_v2_write_uint32
 
 
-#define ngx_http_v2_indexed(i)      (128 + (i))
-#define ngx_http_v2_inc_indexed(i)  (64 + (i))
-
-#define ngx_http_v2_write_name(dst, src, len, tmp)                            \
-    ngx_http_v2_string_encode(dst, src, len, tmp, 1)
-#define ngx_http_v2_write_value(dst, src, len, tmp)                           \
-    ngx_http_v2_string_encode(dst, src, len, tmp, 0)
+#define NGX_HTTP_V2_HEADER_TABLE_SIZE     4096
 
 #define NGX_HTTP_V2_ENCODE_RAW            0
 #define NGX_HTTP_V2_ENCODE_HUFF           0x80
+
+#define NGX_HTTP_V2_HEADER_INDEXED        0x80
+#define NGX_HTTP_V2_HEADER_INCINDEX       0x40
+#define NGX_HTTP_V2_HEADER_TABLE_UPDATE   0x20
+#define NGX_HTTP_V2_HEADER_NOINDEX        0x00
 
 #define NGX_HTTP_V2_AUTHORITY_INDEX       1
 
@@ -406,8 +410,35 @@ size_t ngx_http_v2_huff_encode(u_char *src, size_t len, u_char *dst,
 #define NGX_HTTP_V2_VARY_INDEX            59
 
 
+#define ngx_http_v2_indexed(i)           (NGX_HTTP_V2_HEADER_INDEXED + (i))
+#define ngx_http_v2_inc_indexed(i)       (NGX_HTTP_V2_HEADER_INCINDEX + (i))
+
+#define ngx_http_v2_write_indexed(dst, value)                                 \
+    ngx_http_v2_write_int(dst, NGX_HTTP_V2_HEADER_INDEXED,                    \
+                          ngx_http_v2_prefix(7), value)
+#define ngx_http_v2_write_inc_indexed(dst, value)                             \
+    ngx_http_v2_write_int(dst, NGX_HTTP_V2_HEADER_INCINDEX,                   \
+                          ngx_http_v2_prefix(6), value)
+#define ngx_http_v2_write_inc_noindex(dst, value)                             \
+    ngx_http_v2_write_int(dst, NGX_HTTP_V2_HEADER_NOINDEX,                    \
+                          ngx_http_v2_prefix(4), value)
+#define ngx_http_v2_write_lit_indexed(dst)                                    \
+    ngx_http_v2_write_int(dst, NGX_HTTP_V2_HEADER_INCINDEX,                   \
+                          ngx_http_v2_prefix(6), 0)
+#define ngx_http_v2_write_lit_noindex(dst)                                    \
+    ngx_http_v2_write_int(dst, NGX_HTTP_V2_HEADER_NOINDEX,                    \
+                          ngx_http_v2_prefix(4), 0)
+
+u_char *ngx_http_v2_write_int(u_char *dst,u_char prefix,
+		              ngx_uint_t prefix_mark, ngx_uint_t value);
+
+
+#define ngx_http_v2_write_name(dst, src, len, tmp)                            \
+    ngx_http_v2_string_encode(dst, src, len, tmp, 1)
+#define ngx_http_v2_write_value(dst, src, len, tmp)                           \
+    ngx_http_v2_string_encode(dst, src, len, tmp, 0)
+
 u_char *ngx_http_v2_string_encode(u_char *dst, u_char *src, size_t len,
     u_char *tmp, ngx_uint_t lower);
-
 
 #endif /* _NGX_HTTP_V2_H_INCLUDED_ */
