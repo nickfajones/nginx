@@ -141,7 +141,7 @@ ngx_http_v2_write_header(ngx_http_v2_connection_t *h2c,
     u_char *pos, u_char *tmp)
 {
     ngx_http_v2_header_t   header;
-    ngx_uint_t             index, name_only;
+    ngx_uint_t             index, name_only, was_added;
 
     ngx_strlow(tmp + NGX_PTR_SIZE, name, name_len);
 
@@ -158,13 +158,15 @@ ngx_http_v2_write_header(ngx_http_v2_connection_t *h2c,
                    &header.name, &header.value);
 #endif
 
-    ngx_http_v2_get_header_index(h2c, &header, &index, &name_only);
+    ngx_http_v2_find_and_insert_header(h2c, &header,
+                                      &index, &name_only, &was_added);
 
     if (index == 0) {
+
         ngx_log_debug0(NGX_LOG_DEBUG_HTTP, h2c->connection->log, 0,
                        "http2 no index found");
 
-        if (ngx_http_v2_add_header(h2c, &header, 0) == NGX_OK) {
+        if (was_added) {
 
             ngx_log_debug0(NGX_LOG_DEBUG_HTTP, h2c->connection->log, 0,
                            "http2 added new index");
@@ -190,7 +192,7 @@ ngx_http_v2_write_header(ngx_http_v2_connection_t *h2c,
                        "http2 name match index: %d",
                        index);
 
-        if (ngx_http_v2_add_header(h2c, &header, 0) == NGX_OK) {
+        if (was_added) {
 
             ngx_log_debug0(NGX_LOG_DEBUG_HTTP, h2c->connection->log, 0,
                            "http2 added new index");
@@ -539,9 +541,11 @@ ngx_http_v2_header_filter(ngx_http_request_t *r)
 
     if (h2c->table_update) {
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, fc->log, 0,
-                       "http2 table size update: %ui", h2c->hpack_enc.size);
+                       "http2 table size update: %ui",
+                       h2c->hpack_enc.hpack.size);
         pos = ngx_http_v2_write_int(pos, NGX_HTTP_V2_HEADER_TABLE_UPDATE,
-                                    ngx_http_v2_prefix(5), h2c->hpack_enc.size);
+                                    ngx_http_v2_prefix(5),
+                                    h2c->hpack_enc.hpack.size);
         h2c->table_update = 0;
     }
 
@@ -1087,9 +1091,11 @@ ngx_http_v2_push_resource(ngx_http_request_t *r, ngx_str_t *path,
 
     if (h2c->table_update) {
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, fc->log, 0,
-                       "http2 table size update: %ui", h2c->hpack_enc.size);
+                       "http2 table size update: %ui",
+                       h2c->hpack_enc.hpack.size);
         pos = ngx_http_v2_write_int(pos, NGX_HTTP_V2_HEADER_TABLE_UPDATE,
-                                    ngx_http_v2_prefix(5), h2c->hpack_enc.size);
+                                    ngx_http_v2_prefix(5),
+                                    h2c->hpack_enc.hpack.size);
         h2c->table_update = 0;
     }
 

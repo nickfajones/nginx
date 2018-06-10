@@ -55,6 +55,11 @@
 #define NGX_HTTP_V2_DEFAULT_WEIGHT       16
 
 
+/* HPACK tables */
+#define NGX_HTTP_V2_HPACK_FULL_HSIZE     128
+#define NGX_HTTP_V2_HPACK_NAME_HSIZE     64
+
+
 typedef struct ngx_http_v2_connection_s   ngx_http_v2_connection_t;
 typedef struct ngx_http_v2_node_s         ngx_http_v2_node_t;
 typedef struct ngx_http_v2_out_frame_s    ngx_http_v2_out_frame_t;
@@ -113,6 +118,18 @@ typedef struct {
     u_char                          *pos;
 } ngx_http_v2_hpack_t;
 
+typedef struct {
+    uint64_t                         hash_val;
+    ngx_uint_t                       index;
+} ngx_http_v2_hpack_enc_entry_t;
+
+typedef struct {
+    ngx_http_v2_hpack_t              hpack;
+
+    ngx_http_v2_hpack_enc_entry_t  **htable_full;
+    ngx_http_v2_hpack_enc_entry_t  **htable_name;
+} ngx_http_v2_hpack_enc_t;
+
 
 struct ngx_http_v2_connection_s {
     ngx_connection_t                *connection;
@@ -134,7 +151,7 @@ struct ngx_http_v2_connection_s {
     ngx_http_v2_state_t              state;
 
     ngx_http_v2_hpack_t              hpack_dec;
-    ngx_http_v2_hpack_t              hpack_enc;
+    ngx_http_v2_hpack_enc_t          hpack_enc;
 
     ngx_pool_t                      *pool;
 
@@ -298,8 +315,9 @@ ngx_str_t *ngx_http_v2_get_static_value(ngx_uint_t index);
 ngx_int_t ngx_http_v2_get_indexed_header(ngx_http_v2_connection_t *h2c,
     ngx_uint_t index, ngx_uint_t name_only);
 
-void ngx_http_v2_get_header_index(ngx_http_v2_connection_t *h2c,
-    ngx_http_v2_header_t *header, ngx_uint_t *index, ngx_uint_t *name_only);
+void ngx_http_v2_find_and_insert_header(ngx_http_v2_connection_t *h2c,
+    ngx_http_v2_header_t *header, ngx_uint_t *index, ngx_uint_t *name_only,
+    ngx_uint_t *was_added);
 
 ngx_int_t ngx_http_v2_add_header(ngx_http_v2_connection_t *h2c,
     ngx_http_v2_header_t *header, ngx_uint_t is_request);

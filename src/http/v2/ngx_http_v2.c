@@ -276,8 +276,8 @@ ngx_http_v2_init(ngx_event_t *rev)
 
     h2c->hpack_dec.size = NGX_HTTP_V2_HEADER_TABLE_SIZE;
     h2c->hpack_dec.free = NGX_HTTP_V2_HEADER_TABLE_SIZE;
-    h2c->hpack_enc.size = NGX_HTTP_V2_HEADER_TABLE_SIZE;
-    h2c->hpack_enc.free = NGX_HTTP_V2_HEADER_TABLE_SIZE;
+    h2c->hpack_enc.hpack.size = NGX_HTTP_V2_HEADER_TABLE_SIZE;
+    h2c->hpack_enc.hpack.free = NGX_HTTP_V2_HEADER_TABLE_SIZE;
 
     h2c->pool = ngx_create_pool(h2scf->pool_size, h2c->connection->log);
     if (h2c->pool == NULL) {
@@ -2083,7 +2083,7 @@ ngx_http_v2_state_settings_params(ngx_http_v2_connection_t *h2c, u_char *pos,
                 value = NGX_HTTP_V2_HEADER_TABLE_SIZE;
             }
 
-            if (value != h2c->hpack_enc.size) {
+            if (value != h2c->hpack_enc.hpack.size) {
                 if (ngx_http_v2_table_size(h2c, value, 0) != NGX_OK) {
                     return ngx_http_v2_connection_error(h2c,
                                                         NGX_HTTP_V2_COMP_ERROR);
