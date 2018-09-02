@@ -659,35 +659,6 @@ ngx_http_v2_lookup_static_entry(ngx_http_v2_header_t *header, uint64_t hash_val,
 }
 
 
-static ngx_uint_t
-ngx_http_v2_compare_dynamic_stored_str(ngx_http_v2_hpack_t *hpack,
-    ngx_str_t *stored_str, ngx_str_t *str)
-{
-    size_t     rest;
-    ngx_uint_t cmp;
-
-    if (stored_str->len > str->len) {
-        return stored_str->len - str->len;
-    } else if (str->len > stored_str->len) {
-        return str->len - stored_str->len;
-    }
-
-    rest = hpack->storage + NGX_HTTP_V2_HEADER_TABLE_SIZE - stored_str->data;
-
-    if (rest >= stored_str->len) {
-        return ngx_strncmp(stored_str->data, str->data, str->len);
-    }
-
-    if (((cmp = ngx_strncmp(stored_str->data, str->data, rest)) != 0) ||
-        ((cmp = ngx_strncmp(hpack->storage, str->data + rest,
-                            str->len - rest)) != 0)) {
-        return cmp;
-    }
-
-    return 0;
-}
-
-
 ngx_int_t
 ngx_http_v2_get_indexed_header(ngx_http_v2_connection_t *h2c, ngx_uint_t index,
     ngx_uint_t name_only)
@@ -772,6 +743,35 @@ ngx_http_v2_get_indexed_header(ngx_http_v2_connection_t *h2c, ngx_uint_t index,
                   "client sent out of bound hpack table index: %ui", index);
 
     return NGX_ERROR;
+}
+
+
+static ngx_uint_t
+ngx_http_v2_compare_dynamic_stored_str(ngx_http_v2_hpack_t *hpack,
+    ngx_str_t *stored_str, ngx_str_t *str)
+{
+    size_t     rest;
+    ngx_uint_t cmp;
+
+    if (stored_str->len > str->len) {
+        return stored_str->len - str->len;
+    } else if (str->len > stored_str->len) {
+        return str->len - stored_str->len;
+    }
+
+    rest = hpack->storage + NGX_HTTP_V2_HEADER_TABLE_SIZE - stored_str->data;
+
+    if (rest >= stored_str->len) {
+        return ngx_strncmp(stored_str->data, str->data, str->len);
+    }
+
+    if (((cmp = ngx_strncmp(stored_str->data, str->data, rest)) != 0) ||
+        ((cmp = ngx_strncmp(hpack->storage, str->data + rest,
+                            str->len - rest)) != 0)) {
+        return cmp;
+    }
+
+    return 0;
 }
 
 
@@ -950,7 +950,7 @@ ngx_http_v2_add_header(ngx_http_v2_connection_t *h2c,
     ngx_http_v2_header_t *header, ngx_uint_t is_request)
 {
     size_t                 avail;
-    ngx_uint_t             index;
+    ngx_uint_t             index1, index2;
     ngx_http_v2_hpack_t   *hpack;
     ngx_http_v2_header_t  *entry, **entries;
 
@@ -1037,8 +1037,12 @@ ngx_http_v2_add_header(ngx_http_v2_connection_t *h2c,
             return NGX_ERROR;
         }
 
-        index = (hpack->deleted - 1) % hpack->allocated;
+        index1 = (hpack->deleted - 1) % hpack->allocated;
+        index2 = (hpack->deleted - 1) % (hpack->allocated + 64);
 
+        if (index1)
+
+#if 0
         ngx_memcpy(&entries[(hpack->allocated + 64 - 1) -
                             (hpack->allocated - index)],
                    &hpack->entries[index],
@@ -1049,6 +1053,7 @@ ngx_http_v2_add_header(ngx_http_v2_connection_t *h2c,
                    index * sizeof(ngx_http_v2_header_t *));
 
         (void) ngx_pfree(h2c->connection->pool, hpack->entries);
+#endif
 
         hpack->entries = entries;
 
