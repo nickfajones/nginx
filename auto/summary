@@ -79,4 +79,8 @@ if [ $HTTP_SCGI = YES ]; then
     echo "  nginx http scgi temporary files: \"$NGX_HTTP_SCGI_TEMP_PATH\""
 fi
 
+if [ $HTTP_NEURON = YES ]; then
+    echo "  nginx http neuron is bringing home the bacon"
+fi
+
 echo "$NGX_POST_CONF_MSG"
